@@ -1,0 +1,190 @@
+-- ------------------------------------------------------------
+-- HR ANALYTICS – SQL QUERIES
+-- Database: hrdata (PostgreSQL)
+-- Purpose: table creation, data load, KPI calculations, segmentation
+-- ------------------------------------------------------------
+
+-- 1) Create table (adjust types/lengths as required)
+CREATE TABLE IF NOT EXISTS hrdata (
+    emp_no        BIGINT PRIMARY KEY,
+    gender        VARCHAR(50) NOT NULL,
+    marital_status VARCHAR(50),
+    age_band      VARCHAR(50),
+    age           INTEGER,
+    department    VARCHAR(50),
+    education     VARCHAR(50),
+    education_field VARCHAR(100),
+    job_role      VARCHAR(100),
+    business_travel VARCHAR(50),
+    employee_count BIGINT,
+    attrition     VARCHAR(10),
+    attrition_label VARCHAR(50),
+    job_satisfaction INTEGER,
+    active_employee INTEGER
+);
+
+
+-- 2) Import data from CSV (server-side path). Modify path as needed.
+-- COPY hrdata FROM '/path/to/hrdata.csv' DELIMITER ',' CSV HEADER;
+
+
+-- 3) Basic KPIs
+
+-- Total employee count (sum of employee_count)
+SELECT SUM(employee_count) AS total_employees
+FROM hrdata;
+
+
+-- Attrition count (number of rows with attrition = 'Yes')
+SELECT COUNT(*) AS attrition_count
+FROM hrdata
+WHERE attrition = 'Yes';
+
+
+-- Attrition rate (%) — rounded to 2 decimals
+SELECT
+    ROUND(
+        (CAST((SELECT COUNT(*) FROM hrdata WHERE attrition = 'Yes') AS NUMERIC)
+         / NULLIF(SUM(employee_count),0)) * 100.0
+    , 2) AS attrition_rate_pct
+FROM hrdata;
+
+
+-- Active employees = total employees - attrition count
+SELECT
+    (COALESCE(SUM(employee_count),0)
+     - COALESCE((SELECT COUNT(*) FROM hrdata WHERE attrition = 'Yes'),0)
+    ) AS active_employees
+FROM hrdata;
+
+
+-- Alternative Active Employees using a single query
+SELECT
+    (SUM(employee_count) - SUM(CASE WHEN attrition = 'Yes' THEN 1 ELSE 0 END)) AS active_employees_alt
+FROM hrdata;
+
+
+-- Average age (rounded)
+SELECT ROUND(AVG(age)::NUMERIC, 0) AS average_age
+FROM hrdata;
+
+
+-- 4) Segmentation / Breakdown queries
+
+-- Attrition by gender
+SELECT
+    gender,
+    COUNT(*) AS attrition_count
+FROM hrdata
+WHERE attrition = 'Yes'
+GROUP BY gender
+ORDER BY attrition_count DESC;
+
+
+-- Department-wise attrition and percentage contribution to total attrition
+SELECT
+    department,
+    COUNT(*) AS attrition_count,
+    ROUND( (CAST(COUNT(*) AS NUMERIC) / NULLIF((SELECT COUNT(*) FROM hrdata WHERE attrition = 'Yes'),0)) * 100.0, 2) AS pct_of_total_attrition
+FROM hrdata
+WHERE attrition = 'Yes'
+GROUP BY department
+ORDER BY attrition_count DESC;
+
+
+-- Number of employees by age (or age bands if populated)
+SELECT
+    age,
+    SUM(employee_count) AS employee_count
+FROM hrdata
+GROUP BY age
+ORDER BY age;
+
+
+-- Education field wise attrition
+SELECT
+    education_field,
+    COUNT(*) AS attrition_count
+FROM hrdata
+WHERE attrition = 'Yes'
+GROUP BY education_field
+ORDER BY attrition_count DESC;
+
+
+-- Attrition rate by gender within age bands (percentage of total attrition)
+SELECT
+    age_band,
+    gender,
+    COUNT(*) AS attrition_count,
+    ROUND( (CAST(COUNT(*) AS NUMERIC) / NULLIF((SELECT COUNT(*) FROM hrdata WHERE attrition = 'Yes'),0)) * 100.0, 2) AS pct_of_total_attrition
+FROM hrdata
+WHERE attrition = 'Yes'
+GROUP BY age_band, gender
+ORDER BY age_band, gender DESC;
+
+
+-- 5) Job satisfaction pivot (Postgres crosstab)
+-- Enable tablefunc extension if not already enabled (requires superuser / appropriate privileges)
+CREATE EXTENSION IF NOT EXISTS tablefunc;
+
+-- Crosstab: job_role vs job_satisfaction (ensure job_satisfaction values are known)
+-- Adjust the output column list (one,two,three,four,...) to match possible satisfaction scores in your data.
+SELECT *
+FROM crosstab(
+    'SELECT job_role, job_satisfaction, SUM(employee_count) AS cnt
+     FROM hrdata
+     GROUP BY job_role, job_satisfaction
+     ORDER BY job_role, job_satisfaction'
+) AS ct (
+    job_role VARCHAR(100),
+    one NUMERIC,
+    two NUMERIC,
+    three NUMERIC,
+    four NUMERIC
+)
+ORDER BY job_role;
+
+
+-- 6) Additional useful queries
+
+-- Top departments by headcount
+SELECT
+    department,
+    SUM(employee_count) AS headcount
+FROM hrdata
+GROUP BY department
+ORDER BY headcount DESC;
+
+
+-- Attrition rate per department (attrition_count / department headcount)
+SELECT
+    department,
+    COUNT(*) FILTER (WHERE attrition = 'Yes') AS attrition_count,
+    SUM(employee_count) AS headcount,
+    ROUND(
+      (CAST(COUNT(*) FILTER (WHERE attrition = 'Yes') AS NUMERIC) / NULLIF(SUM(employee_count),0)) * 100.0
+    ,2) AS attrition_rate_pct
+FROM hrdata
+GROUP BY department
+ORDER BY attrition_rate_pct DESC;
+
+
+-- Average job satisfaction by department
+SELECT
+    department,
+    ROUND(AVG(job_satisfaction)::NUMERIC,2) AS avg_job_satisfaction
+FROM hrdata
+GROUP BY department
+ORDER BY avg_job_satisfaction DESC;
+
+
+-- Employees by job role and active status
+SELECT
+    job_role,
+    COUNT(*) FILTER (WHERE attrition IS DISTINCT FROM 'Yes') AS active_count,
+    COUNT(*) FILTER (WHERE attrition = 'Yes') AS left_count
+FROM hrdata
+GROUP BY job_role
+ORDER BY active_count DESC;
+
+
